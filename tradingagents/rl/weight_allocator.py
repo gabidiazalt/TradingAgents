@@ -145,23 +145,50 @@ class DRLAllocator(WeightAllocator):
 
     def _apply_bias(self, w: np.ndarray, features) -> np.ndarray:
         if not self._bias:
-            return w
+            return self._apply_filters(w, features)
         # heuristic: reduce weight for symbols with hit_rate <0.5
         if isinstance(features, pd.DataFrame):
             cols = list(features.columns[: len(w)])
             factors = np.array([self._bias.get(str(c), 1.0) for c in cols], dtype=float)
             w = w * factors
+            w = self._apply_filters(w, features)
             return _sanitize_weights(w)
         # ndarray: apply global factor (mean bias)
         g = float(np.mean(list(self._bias.values()))) if self._bias else 1.0
         if g < 1.0:
             w = w * g
-            # renormalize to keep sum 1
+            w = self._apply_filters(w, features)
             return _sanitize_weights(w)
+        return self._apply_filters(w, features)
+
+    def _apply_filters(self, w: np.ndarray, features) -> np.ndarray:
+        """Filter: down-weight high-vol or low-spread proxies to improve hit_rate."""
+        try:
+            arr = features.to_numpy(dtype=float) if isinstance(features, pd.DataFrame) else np.asarray(features, dtype=float)
+            if arr.ndim == 1:
+                arr = arr.reshape(-1, 1)
+            if len(arr) >= 10:
+                rets = np.diff(arr[-20:], axis=0) / np.clip(np.abs(arr[-21:-1]), 1e-6, None)
+                vols = np.nan_to_num(np.std(rets, axis=0), nan=0.01)
+                # high vol >2.5% -> halve weight
+                for i, v in enumerate(vols[: len(w)]):
+                    if v > 0.025:
+                        w[i] *= 0.5
+                    elif v > 0.015:
+                        w[i] *= 0.8
+                # low level proxy: if price level is far below trend (mean), reduce
+                # interpret low price as weak carry - mild penalty
+                latest = arr[-1, : len(w)]
+                sma = np.mean(arr[-10:, : len(w)], axis=0)
+                for i in range(min(len(w), len(latest))):
+                    if latest[i] < sma[i] * 0.985:
+                        w[i] *= 0.7
+        except Exception:
+            pass
         return w
 
     def update_from_outcomes(self, outcomes: list) -> dict:
-        """Heuristic learning: if hit_rate <0.5 reduce allocation to that currency."""
+        """Heuristic learning: aggressive tiered bias to boost hit_rate."""
         if not outcomes:
             return {}
         groups: dict[str, list] = {}
@@ -171,8 +198,18 @@ class DRLAllocator(WeightAllocator):
         for sym, rows in groups.items():
             pnls = [float(r.get("pnl_net", 0)) for r in rows]
             hit = sum(1 for p in pnls if p > 0) / len(pnls) if pnls else 0.5
-            # reward = pnl_net - cost is already used for pnl_net; heuristic scales
-            self._bias[sym] = 0.7 if hit < 0.5 else min(1.2, 1.0 + (hit - 0.5))
+            # aggressive tiers: strong penalty for losers, boost for winners
+            if hit < 0.35:
+                factor = 0.30
+            elif hit < 0.42:
+                factor = 0.50
+            elif hit < 0.50:
+                factor = 0.75
+            elif hit < 0.60:
+                factor = 1.00
+            else:
+                factor = min(1.80, 1.0 + (hit - 0.5) * 2.5)
+            self._bias[sym] = factor
         return dict(self._bias)
 
     def compute_reward(self, pnl_net: float, cost: float) -> float:
