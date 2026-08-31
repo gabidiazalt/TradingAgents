@@ -69,7 +69,7 @@ class TimesFMForecaster:
                 m.load_checkpoint(self.checkpoint_dir, torch_compile=False)  # type: ignore
             else:
                 # Auto-download from Hugging Face hub (may fail offline -> fallback).
-                m = _TimesFM_Torch.from_pretrained()  # type: ignore
+                m = _TimesFM_Torch.from_pretrained("google/timesfm-2.5-200M_torch")  # type: ignore
             # Clamp context to model limit and patch alignment (patch=32, output=128).
             ctx = min(self.context_len, 16384 - 128)
             ctx = max(32, (ctx // 32) * 32)

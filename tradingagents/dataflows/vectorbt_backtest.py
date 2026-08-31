@@ -14,7 +14,7 @@ try:
     import vectorbt as vbt  # type: ignore
 
     _HAS_VECTORBT = True
-except ImportError:  # pragma: no cover
+except Exception:  # pragma: no cover - vectorbt may fail on plotly mismatch
     vbt = None  # type: ignore
     _HAS_VECTORBT = False
 
