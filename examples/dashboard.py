@@ -281,6 +281,50 @@ def api_arbitrage():
         return jsonify({"error": str(exc)}), 500
 
 
+@app.route("/api/funding-bargain")
+@require_token
+def api_funding_bargain():
+    """Funding-bargain: fund cheap to hunt bargain, collect return and unwind."""
+    try:
+        from tradingagents.chains.funding_bargain_strategy import FundingBargainStrategy
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+    try:
+        notional = float(request.args.get("notional", "10000"))
+        threshold = int(request.args.get("threshold_bps", "50"))
+    except ValueError:
+        return jsonify({"error": "notional/threshold_bps must be numeric"}), 400
+    try:
+        strat = FundingBargainStrategy(fx_provider=fx_provider, rates_provider=rates_provider)
+        funding = strat.find_funding_market()
+        bargains = strat.find_bargain_market(threshold_bps=threshold)
+        # generate up to 3 trades via manager helper
+        try:
+            from tradingagents.chains.portfolio_manager import CarryTradePortfolioManager
+            pm = CarryTradePortfolioManager()
+            pm.rates_provider = rates_provider
+            pm.fx_provider = fx_provider
+            trades = pm.generate_funding_bargain_trades(notional=notional, threshold_bps=threshold)
+        except Exception:
+            # fallback direct
+            fund_ccy = funding.get("funding_ccy", "JPY")
+            cands = []
+            for a in bargains.get("arbitrage", []):
+                if a.get("quote"):
+                    cands.append(a["quote"])
+            for d in bargains.get("etf_disconnects", []):
+                if d.get("ccy") and d["ccy"] not in cands:
+                    cands.append(d["ccy"])
+            if not cands:
+                cands = ["BRL", "TRY", "MXN"]
+            trades = [strat.generate_trade(fund_ccy, c, notional_usd=notional) for c in cands[:3]]
+        # add expected net summary
+        total_net = sum(float(t.get("expected_pnl_usd", 0)) for t in trades)
+        return jsonify({"funding_market": funding, "bargain_markets": bargains, "trades": trades, "total_expected_net_usd": round(total_net, 2), "timestamp": datetime.now().isoformat()})
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.route("/api/interest-rates")
 @require_token
 def api_interest_rates():

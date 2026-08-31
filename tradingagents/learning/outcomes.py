@@ -67,6 +67,10 @@ class TradeOutcomeLogger:
             pass
         return record  # type: ignore[return-value]
 
+    def log_funding_bargain(self, trade: Dict, simulated_pnl: float, fx_shock_bps: float = 0) -> Dict:
+        """Paired-trade logger: funding cost vs bargain return."""
+        return self.log_outcome(gross_spread=float(trade.get("spread_pct", 0)), net_expected=float(trade.get("expected_net_pct", 0)), forecast=float(trade.get("expected_net_pct", 0)), real_fx_move=float(-fx_shock_bps / 100), pnl_net=float(simulated_pnl), cost_breakdown=dict(trade.get("cost_breakdown", {})), symbol=f"{trade.get('funding_ccy')}/{trade.get('bargain_ccy')}")
+
     def load_outcomes(self, limit: int = 1000) -> List[Dict]:
         if not self.path.exists():
             return []

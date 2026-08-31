@@ -518,6 +518,53 @@ class CarryTradePortfolioManager:
         except Exception:
             return []
 
+    def generate_funding_bargain_trades(self, notional: float = 10000, threshold_bps: int = 50) -> List[Dict]:
+        """Funding-bargain alternative to carry trades. Borrow cheap, hunt bargain, unwind."""
+        try:
+            from tradingagents.chains.funding_bargain_strategy import FundingBargainStrategy
+        except ImportError:
+            return []
+        strat = FundingBargainStrategy(fx_provider=self.fx_provider, rates_provider=self.rates_provider)
+        funding = strat.find_funding_market()
+        bargains = strat.find_bargain_market(threshold_bps=threshold_bps)
+        # collect bargain ccys from cheap assets
+        bargain_ccys: List[str] = []
+        for a in bargains.get("arbitrage", []):
+            q = a.get("quote")
+            if q and q not in bargain_ccys:
+                bargain_ccys.append(q)
+        for d in bargains.get("etf_disconnects", []):
+            c = d.get("ccy")
+            if c and c not in bargain_ccys:
+                bargain_ccys.append(c)
+        if not bargain_ccys:
+            # fallback: highest yield spread vs funding
+            try:
+                rates = self.rates_provider.get_all_rates()
+            except Exception:
+                rates = {}
+            fund_ccy = funding.get("funding_ccy", "JPY")
+            fund_rate = funding.get("rate", 0.1)
+            spreads = []
+            for k, v in rates.items():
+                try:
+                    r = float(v.rate)
+                    ccy = getattr(v, "currency", k)
+                    if ccy != fund_ccy:
+                        spreads.append((ccy, r - fund_rate))
+                except Exception:
+                    continue
+            spreads.sort(key=lambda x: x[1], reverse=True)
+            bargain_ccys = [c for c, _ in spreads[:3]] or ["BRL", "TRY", "MXN"]
+        fund_ccy = funding.get("funding_ccy", "JPY")
+        trades: List[Dict] = []
+        for bccy in bargain_ccys[:3]:
+            try:
+                trades.append(strat.generate_trade(fund_ccy, bccy, notional_usd=notional))
+            except Exception:
+                continue
+        return trades
+
     def close(self):
         """Close providers"""
         self.rates_provider.close()
